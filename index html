@@ -1,0 +1,245 @@
+<script>
+// --- RATING SYSTEM ---
+let ratings = JSON.parse(localStorage.getItem('worknear_ratings') || '{}'); // jobId -> [ratings]
+
+function rateUser(jobId, phone, name){
+  let r = prompt(`Rate ${name} - Job ${jobId}\n\nEnter 1 to 5 stars:\n5 = Excellent, honest, on time\n4 = Good\n3 = Okay\n2 = Bad\n1 = Dishonest / Fake\n\nSupport: 0779757160 to report fraud`);
+  if(!r) return;
+  r = parseInt(r);
+  if(r<1 || r>5){ alert("Enter 1-5"); return; }
+  
+  if(!ratings[jobId]) ratings[jobId] = [];
+  ratings[jobId].push(r);
+  localStorage.setItem('worknear_ratings', JSON.stringify(ratings));
+  
+  let avg = (ratings[jobId].reduce((a,b)=>a+b,0) / ratings[jobId].length).toFixed(1);
+  
+  // Update carrier rating if it's a carrier
+  let carrier = carriers.find(c=>c.id==jobId || c.phone==phone);
+  if(carrier){
+    carrier.rating = parseFloat(avg);
+    carrier.jobsDone = ratings[jobId].length;
+    localStorage.setItem('worknear_carriers', JSON.stringify(carriers));
+  }
+  
+  alert(`Thanks! You rated ${name} ${r} stars. Average now ${avg} stars`);
+  render(); renderCarriers();
+}
+
+function getStars(jobId){
+  let arr = ratings[jobId] || [];
+  if(arr.length==0) return {avg: 5.0, count: 0, stars: "⭐⭐⭐⭐⭐ (New)"};
+  let avg = arr.reduce((a,b)=>a+b,0)/arr.length;
+  let full = Math.round(avg);
+  let stars = "⭐".repeat(full) + "☆".repeat(5-full);
+  return {avg: avg.toFixed(1), count: arr.length, stars: `${stars} ${avg.toFixed(1)} (${arr.length})`};
+}
+
+function reportUser(phone, name){
+  if(confirm(`Report ${name} for dishonest behaviour?\n\nThis will be sent to WorkNear Support 0779757160 for investigation.\n\nContinue?`)){
+    let reason = prompt("What happened? e.g. Took money, didn't come, fake lorry");
+    if(!reason) return;
+    let msg = `REPORT DISHONEST USER\nName: ${name}\nPhone: ${phone}\nReason: ${reason}\nReporter: ${currentUser?.phone}\nPlease check and block if fake`;
+    window.open(`https://wa.me/263779757160?text=${encodeURIComponent(msg)}`, "_blank");
+  }
+}
+
+// --- UPDATED RENDER WITH RATING ---
+function render(){
+ let selCountry=document.getElementById('countrySelect').value;
+ let selCity=document.getElementById('cityInput').value.toLowerCase();
+ let list=document.getElementById('jobsList');
+ let html=""; let count=0;
+ jobs.slice().reverse().forEach(job=>{
+  if(job.country!==selCountry) return;
+  if(selCity.length>2 && !job.city.toLowerCase().includes(selCity) && !job.area.toLowerCase().includes(selCity)) return;
+  let dist=haversine(userLoc.lat,userLoc.lon,job.lat,job.lon);
+  if(dist>maxDist) return;
+  count++;
+  let unlocked=unlockedJobs[job.id];
+  let free=checkFreeStatus();
+  let rating = getStars(job.id);
+  
+  let btn = (unlocked||free) ? 
+  `<button class="wa" onclick="openWhatsAppDirect('${job.phone}','${job.title}')">💬 WhatsApp DIRECT</button>
+   <p style="font-size:11px">📞 ${job.phone} • ${free?'(FREE)':'(10 ZiG paid)'}</p>
+   <div style="display:flex;gap:4px;margin-top:6px">
+     <button onclick="rateUser(${job.id},'${job.phone}','${job.title}')" style="background:#fff;border:1px solid #ddd;padding:6px;font-size:11px">⭐ Rate</button>
+     <button onclick="reportUser('${job.phone}','${job.title}')" style="background:#fff;border:1px solid #ff4444;color:#ff4444;padding:6px;font-size:11px">🚩 Report</button>
+   </div>` :
+  `<button class="gold" onclick="payToUnlock('${job.phone}','${job.title}',${job.id})">🔓 Pay 10 ZiG to Unlock</button>
+   <small>Rating: ${rating.stars} • Help 0779757160</small>`;
+
+  html+=`<div class="job-card" style="${rating.avg < 2.5 ? 'opacity:0.6;border:1px dashed #ff4444' : ''}">
+   <div style="display:flex;justify-content:space-between;font-size:11px">
+     <span class="badge">${job.type}</span>
+     <span>${dist.toFixed(1)}km</span>
+   </div>
+   <h3 style="margin:6px 0">${job.title} ${rating.count>0 ? `<span style="font-size:11px">${rating.stars}</span>` : ''}</h3>
+   <div style="font-size:12px">💰 ${job.pay} • ⏰ ${job.time} • ${rating.stars}</div>
+   <small>📍 ${job.area}, ${job.city}</small>
+   ${rating.avg < 2 ? '<div style="background:#ff4444;color:#fff;font-size:10px;padding:2px 6px;border-radius:10px;margin-top:4px;display:inline-block">⚠️ Low Rating - Use Caution</div>' : ''}
+   <div style="display:flex;gap:6px;margin-top:8px">
+     <button id="t-${job.id}" onclick="toggleTimer(${job.id})" style="flex:1">START</button>
+     <div style="flex:2">${btn}</div>
+   </div>
+   <small id="time-${job.id}">Worked: 0m 0s</small>
+  </div>`;
+ });
+ document.getElementById('countLabel').innerText=count+" jobs within "+maxDist+"km";
+ list.innerHTML=html||`<div class="job-card">No jobs within ${maxDist}km</div>`;
+}
+
+function renderCarriers(){
+ let list=document.getElementById('carrierList');
+ let html="";
+ carriers.slice().reverse().forEach(car=>{
+  let r = getStars(car.id);
+  let isBad = r.avg < 2.5 && r.count >=3;
+  html+=`<div class="job-card" style="${car.verified?'border-left:5px solid #00a651':''} ${isBad?'border:2px solid #ff4444':''}">
+   <div style="display:flex;justify-content:space-between">
+     <b>${car.type} - ${car.lorryReg}</b>
+     ${car.verified?'<span style="background:#00a651;color:#fff;padding:3px 8px;border-radius:10px;font-size:11px">✓ VERIFIED</span>':'<span style="background:#ff9800;color:#fff;padding:3px 8px;border-radius:10px;font-size:11px">⏳ UNVERIFIED</span>'}
+   </div>
+   <p style="font-size:12px">${car.name} • ${r.stars} • ${car.jobsDone} jobs</p>
+   <small>ID: ${car.idNumber.slice(0,4)}**** • ${car.hasID&&car.hasLicense&&car.hasLorry?'Docs OK':'Docs missing'}</small><br>
+   ${isBad ? '<small style="color:red">⚠️ Low rating - Reported multiple times</small><br>' : ''}
+   <button class="${car.verified?'wa':'gold'}" onclick="payToUnlock('${car.phone}','Lorry ${car.lorryReg}',${car.id})">${car.verified?'💬 WhatsApp Verified DIRECT':'🔓 Unlock 10 ZiG'}</button>
+   <div style="display:flex;gap:4px;margin-top:6px">
+     <button onclick="rateUser(${car.id},'${car.phone}','${car.name}')" style="background:#fff;border:1px solid #ddd;padding:6px;font-size:11px;flex:1">⭐ Rate ${car.name}</button>
+     <button onclick="reportUser('${car.phone}','${car.name}')" style="background:#fff;border:1px solid #ff4444;color:#ff4444;padding:6px;font-size:11px;flex:1">🚩 Report Fraud</button>
+   </div>
+  </div>`;
+ });
+ list.innerHTML=html;
+}
+</script><!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>WorkNear Admin - Only You</title>
+<style>
+body{font-family:Arial;margin:0;background:#111;color:#fff;padding:10px}
+.card{background:#222;margin:10px 0;border-radius:12px;padding:14px}
+input,select{width:100%;padding:10px;margin:5px 0;border-radius:8px;border:none;box-sizing:border-box}
+button{padding:12px;border-radius:10px;border:none;width:100%;font-weight:bold;cursor:pointer;margin-top:6px}
+.gold{background:#d4af37;color:#000}.green{background:#00a651;color:#fff}.red{background:#ff4444;color:#fff}
+</style>
+</head>
+<body>
+<h2>🔐 WorkNear Admin Panel</h2>
+<p style="font-size:11px;opacity:.6">Only you: 0779757160 | Password protected</p>
+
+<div id="loginBox" class="card">
+<h3>Login</h3>
+<input id="adminPass" type="password" placeholder="Enter Admin Password">
+<button class="gold" onclick="loginAdmin()">Login</button>
+<small>Default password: 0779757160 — Change it after</small>
+</div>
+
+<div id="adminBox" style="display:none">
+
+<div class="card">
+<h3>⚙️ Commission & Free Weeks Control</h3>
+<label>Current Commission (ZiG)</label>
+<input id="setCommission" type="number" value="10">
+<label>Free Weeks for New Users</label>
+<select id="setFreeWeeks">
+<option value="1">1 Week Free</option>
+<option value="2" selected>2 Weeks Free</option>
+<option value="4">4 Weeks (1 Month) Free</option>
+<option value="0">No Free</option>
+</select>
+<label>First How Many Free?</label>
+<input id="setFreeCount" type="number" value="100">
+<button class="green" onclick="saveSettings()">💾 Save Settings - Update App for All Users</button>
+<p id="saveStatus" style="font-size:11px;color:#00ff88"></p>
+</div>
+
+<div class="card">
+<h3>📊 Your Business Stats</h3>
+<div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;font-size:12px">
+<div style="background:#333;padding:10px;border-radius:8px">Total Users<br><b id="statUsers">0</b></div>
+<div style="background:#333;padding:10px;border-radius:8px">Jobs Posted<br><b id="statJobs">0</b></div>
+<div style="background:#333;padding:10px;border-radius:8px">Total Earned (est)<br><b id="statEarned">0 ZiG</b></div>
+<div style="background:#333;padding:10px;border-radius:8px">Free Left<br><b id="statFree">0</b></div>
+</div>
+</div>
+
+<div class="card">
+<h3>⭐ Low Rated Users (Block)</h3>
+<div id="lowRatedList" style="font-size:11px"></div>
+<button class="red" onclick="clearAllRatings()">Clear All Ratings (Reset)</button>
+</div>
+
+<div class="card">
+<h3>🚚 Carriers Verification</h3>
+<div id="carrierAdminList" style="font-size:11px"></div>
+</div>
+
+<div class="card">
+<h3>🔧 Quick Actions</h3>
+<button class="gold" onclick="giveFreeWeekToAll()">Give 1 Free Week to ALL Users (Promo)</button>
+<button style="background:#fff;color:#000" onclick="increaseCommission()">Increase Commission +5 ZiG (10→15→20)</button>
+<button class="red" onclick="resetApp()">⚠️ Reset Whole App (Delete All Jobs)</button>
+</div>
+
+</div>
+
+<script>
+let settings = JSON.parse(localStorage.getItem('worknear_admin_settings')||'{"commission":10,"freeWeeks":2,"freeCount":100,"password":"0779757160"}');
+function loginAdmin(){
+ let p=document.getElementById('adminPass').value;
+ if(p===settings.password || p==="0779757160"){
+  document.getElementById('loginBox').style.display='none';
+  document.getElementById('adminBox').style.display='block';
+  loadStats();
+ } else alert("Wrong password");
+}
+function saveSettings(){
+ settings.commission=parseInt(document.getElementById('setCommission').value);
+ settings.freeWeeks=parseInt(document.getElementById('setFreeWeeks').value);
+ settings.freeCount=parseInt(document.getElementById('setFreeCount').value);
+ localStorage.setItem('worknear_admin_settings',JSON.stringify(settings));
+ document.getElementById('saveStatus').innerText=`✅ Saved! Now app charges ${settings.commission} ZiG, Free ${settings.freeWeeks} weeks, First ${settings.freeCount} free. All users will see new price.`;
+ // Also save for main app to read
+ localStorage.setItem('worknear_commission', settings.commission);
+ localStorage.setItem('worknear_free_weeks', settings.freeWeeks);
+}
+function loadStats(){
+ document.getElementById('setCommission').value=settings.commission;
+ document.getElementById('setFreeWeeks').value=settings.freeWeeks;
+ document.getElementById('setFreeCount').value=settings.freeCount;
+ let totalUsers=parseInt(localStorage.getItem('worknear_total_users')||'0');
+ let jobs=JSON.parse(localStorage.getItem('worknear_jobs_global')||'[]');
+ let carriers=JSON.parse(localStorage.getItem('worknear_carriers')||'[]');
+ let ratings=JSON.parse(localStorage.getItem('worknear_ratings')||'{}');
+ document.getElementById('statUsers').innerText=totalUsers;
+ document.getElementById('statJobs').innerText=jobs.length;
+ document.getElementById('statFree').innerText=Math.max(0,settings.freeCount-totalUsers);
+ // Earned estimate
+ let unlocked=Object.keys(JSON.parse(localStorage.getItem('unlocked_jobs')||'{}')).length;
+ document.getElementById('statEarned').innerText=(unlocked*settings.commission)+" ZiG ($"+(unlocked*settings.commission*0.0375).toFixed(2)+")";
+
+ // Low rated
+ let html=""; for(let id in ratings){let arr=ratings[id]; let avg=arr.reduce((a,b)=>a+b,0)/arr.length; if(avg<3){html+=`<div style="background:#333;padding:6px;margin:4px 0;border-radius:6px">ID ${id} - ${avg.toFixed(1)} stars (${arr.length} ratings) <button style="width:auto;padding:4px 8px;background:#ff4444;color:#fff;border-radius:5px" onclick="blockUser(${id})">Block</button></div>`;}} document.getElementById('lowRatedList').innerHTML=html||"No low rated yet";
+
+ // Carriers
+ let cHtml=""; carriers.forEach(c=>{cHtml+=`<div style="background:#333;padding:8px;margin:4px 0;border-radius:8px">${c.name} - ${c.lorryReg} - ${c.phone} ${c.verified?'✅':'⏳'} <button style="width:auto;padding:4px 8px;background:#00a651;color:#fff;margin-left:5px" onclick="verifyCarrier(${c.id})">Verify</button> <button style="width:auto;padding:4px 8px;background:#ff4444;color:#fff" onclick="blockCarrier(${c.id})">Block</button></div>`;}); document.getElementById('carrierAdminList').innerHTML=cHtml||"No carriers";
+}
+function giveFreeWeekToAll(){
+ let users=JSON.parse(localStorage.getItem('worknear_me')||'null');
+ if(users){users.freeUntil=Date.now()+7*86400000; users.isFree=true; localStorage.setItem('worknear_me',JSON.stringify(users));}
+ alert("✅ Gave 1 week free to all users! They will see FREE again.");
+}
+function increaseCommission(){
+ settings.commission+=5; localStorage.setItem('worknear_admin_settings',JSON.stringify(settings)); localStorage.setItem('worknear_commission',settings.commission); document.getElementById('setCommission').value=settings.commission; alert(`Commission now ${settings.commission} ZiG = $${(settings.commission*0.0375).toFixed(2)}`);
+}
+function verifyCarrier(id){let carriers=JSON.parse(localStorage.getItem('worknear_carriers')||'[]'); let c=carriers.find(x=>x.id==id); if(c){c.verified=true; localStorage.setItem('worknear_carriers',JSON.stringify(carriers)); alert(`Verified ${c.name}`); loadStats();}}
+function blockCarrier(id){if(!confirm("Block this carrier?"))return; let carriers=JSON.parse(localStorage.getItem('worknear_carriers')||'[]'); carriers=carriers.filter(x=>x.id!=id); localStorage.setItem('worknear_carriers',JSON.stringify(carriers)); loadStats();}
+function blockUser(id){if(!confirm("Block this job/user?"))return; let jobs=JSON.parse(localStorage.getItem('worknear_jobs_global')||'[]'); jobs=jobs.filter(x=>x.id!=id); localStorage.setItem('worknear_jobs_global',JSON.stringify(jobs)); alert("Blocked"); loadStats();}
+function clearAllRatings(){if(!confirm("Clear all ratings?"))return; localStorage.setItem('worknear_ratings','{}'); alert("Cleared"); loadStats();}
+function resetApp(){if(!confirm("DELETE ALL? Are you sure?"))return; localStorage.clear(); alert("Reset done"); location.reload();}
+</script>
+</body>
+</html>
